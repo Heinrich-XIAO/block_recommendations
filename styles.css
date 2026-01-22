@@ -1,0 +1,4 @@
+/* Hide YouTube recommendations overlay */
+.ytp-fullscreen-grid-main-content {
+  display: none !important;
+}
