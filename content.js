@@ -43,11 +43,11 @@ function updateTimerDisplay() {
       right: 20px;
       background: rgba(0, 0, 0, 0.85);
       color: #4ade80;
-      padding: 10px 15px;
-      border-radius: 8px;
+      padding: 15px 25px;
+      border-radius: 10px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      font-size: 14px;
-      font-weight: 500;
+      font-size: 32px;
+      font-weight: 600;
       z-index: 999999;
       box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
     `;
@@ -88,11 +88,10 @@ function stopYouTubeTimer() {
 }
 
 async function initYouTubeTracking() {
-  if (await checkYouTubeTimeLimit()) {
-    return;
-  }
-  
   if (isYouTube()) {
+    if (await checkYouTubeTimeLimit()) {
+      return;
+    }
     startYouTubeTimer();
   } else {
     stopYouTubeTimer();
