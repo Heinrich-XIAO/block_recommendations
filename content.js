@@ -7,6 +7,9 @@ const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
 const YOUTUBE_TIME_LIMIT = 24 * 60 * 60 * 1000; // 2 hours in milliseconds
 const TIME_UPDATE_INTERVAL = 1000; // Update every second
 let youtubeTimer = null;
+let youtubeChannelBlockObserver = null;
+let youtubeChannelPageBlocked = false;
+const YOUTUBE_CHANNEL_BLOCK_STYLE_ID = 'youtube-channel-block-style';
 
 function isExtensionContextValid() {
   try {
@@ -23,8 +26,112 @@ function isYouTube() {
 }
 
 function isYouTubeChannelPage() {
-  const path = window.location.pathname || '';
-  return /^\/(?:@[^/]+|channel\/|c\/|user\/)/.test(path);
+  const initialData = window.ytInitialData;
+  if (initialData?.metadata?.channelMetadataRenderer) {
+    return true;
+  }
+
+  const header = initialData?.header || {};
+  if (header.c4TabbedHeaderRenderer || header.pageHeaderRenderer) {
+    return true;
+  }
+
+  const microformat = initialData?.microformat?.microformatDataRenderer;
+  if (microformat?.urlCanonical?.includes('/@') && microformat?.title) {
+    return true;
+  }
+
+  const ogType = document.querySelector('meta[property="og:type"]')?.getAttribute('content');
+  if (ogType === 'profile') {
+    return true;
+  }
+
+  const schemaScripts = document.querySelectorAll('script[type="application/ld+json"]');
+  for (const script of schemaScripts) {
+    const text = script.textContent || '';
+    if (text.includes('"@type":"ProfilePage"') || text.includes('"@type": "ProfilePage"')) {
+      return true;
+    }
+  }
+
+  const browseElement = document.querySelector('ytd-browse[page-subtype="channel"]');
+  if (browseElement) {
+    return true;
+  }
+
+  return Boolean(
+    document.querySelector(
+      'ytd-c4-tabbed-header-renderer, ytd-page-header-renderer, ytd-reel-shelf-renderer[channel-id]'
+    )
+  );
+}
+
+function blockYouTubeChannelPage() {
+  if (youtubeChannelPageBlocked) {
+    return;
+  }
+
+  youtubeChannelPageBlocked = true;
+  stopYouTubeTimer();
+
+  if (!document.head || !document.documentElement) {
+    return;
+  }
+
+  let styleElement = document.getElementById(YOUTUBE_CHANNEL_BLOCK_STYLE_ID);
+  if (!styleElement) {
+    styleElement = document.createElement('style');
+    styleElement.id = YOUTUBE_CHANNEL_BLOCK_STYLE_ID;
+    document.head.appendChild(styleElement);
+  }
+
+  styleElement.textContent = `
+    html, body {
+      margin: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      background: #ffffff !important;
+      overflow: hidden !important;
+    }
+
+    body > * {
+      display: none !important;
+    }
+  `;
+
+  if (document.body) {
+    document.body.replaceChildren();
+  }
+}
+
+function scheduleYouTubeChannelBlockCheck(delay = 0) {
+  window.setTimeout(() => {
+    if (!isYouTube()) {
+      youtubeChannelPageBlocked = false;
+      return;
+    }
+
+    if (isYouTubeChannelPage()) {
+      blockYouTubeChannelPage();
+    }
+  }, delay);
+}
+
+function ensureYouTubeChannelBlockObserver() {
+  if (!isYouTube() || youtubeChannelBlockObserver) {
+    return;
+  }
+
+  youtubeChannelBlockObserver = new MutationObserver(() => {
+    if (!youtubeChannelPageBlocked) {
+      scheduleYouTubeChannelBlockCheck(50);
+    }
+  });
+
+  youtubeChannelBlockObserver.observe(document.documentElement, {
+    childList: true,
+    subtree: true
+  });
 }
 
 async function getYouTubeUsageToday() {
@@ -139,10 +246,16 @@ async function initYouTubeTracking() {
   }
 
   if (isYouTube()) {
-    // if (isYouTubeChannelPage()) {
-    //   window.location.replace('https://www.youtube.com/');
-    //   return;
-    // }
+    youtubeChannelPageBlocked = false;
+    ensureYouTubeChannelBlockObserver();
+    scheduleYouTubeChannelBlockCheck();
+    scheduleYouTubeChannelBlockCheck(250);
+    scheduleYouTubeChannelBlockCheck(1000);
+
+    if (isYouTubeChannelPage()) {
+      blockYouTubeChannelPage();
+      return;
+    }
     if (await checkYouTubeTimeLimit()) {
       return;
     }
@@ -180,6 +293,11 @@ window.addEventListener('beforeunload', () => {
   }
 
   stopYouTubeTimer();
+});
+
+document.addEventListener('yt-navigate-finish', () => {
+  youtubeChannelPageBlocked = false;
+  void initYouTubeTracking();
 });
 
 function countKeywords(text) {
