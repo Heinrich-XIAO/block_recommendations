@@ -2,3 +2,15 @@
 .ytp-fullscreen-grid-main-content {
   display: none !important;
 }
+
+#guide-inner-content {
+  display: none !important;
+}
+
+/* Hide channel/social infocard blocks in video descriptions */
+ytd-video-description-infocards-section-renderer,
+ytd-structured-description-content-renderer ytd-video-description-infocards-section-renderer,
+#description ytd-video-description-infocards-section-renderer,
+[slot="structured-description"] ytd-video-description-infocards-section-renderer {
+  display: none !important;
+}
