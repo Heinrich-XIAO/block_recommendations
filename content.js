@@ -9,9 +9,7 @@ const TIME_UPDATE_INTERVAL = 1000; // Update every second
 let youtubeTimer = null;
 let youtubeChannelBlockObserver = null;
 let youtubeChannelPageBlocked = false;
-let googleResultsObserver = null;
 const YOUTUBE_CHANNEL_BLOCK_STYLE_ID = 'youtube-channel-block-style';
-const GOOGLE_RESULTS_BLOCK_STYLE_ID = 'google-results-block-style';
 
 function isExtensionContextValid() {
   try {
@@ -25,75 +23,6 @@ function isYouTube() {
   return window.location.hostname === 'www.youtube.com'
     || window.location.hostname === 'youtube.com'
     || window.location.hostname === 'm.youtube.com';
-}
-
-function isGoogleDomain() {
-  return /(^|\.)google\.[a-z.]+$/i.test(window.location.hostname);
-}
-
-function ensureGoogleSearchBlockStyles() {
-  if (!isGoogleDomain() || !document.head) {
-    return;
-  }
-
-  let styleElement = document.getElementById(GOOGLE_RESULTS_BLOCK_STYLE_ID);
-  if (!styleElement) {
-    styleElement = document.createElement('style');
-    styleElement.id = GOOGLE_RESULTS_BLOCK_STYLE_ID;
-    document.head.appendChild(styleElement);
-  }
-
-  styleElement.textContent = `
-    div.ULSxyf div.MjjYud {
-      display: none !important;
-    }
-  `;
-}
-
-function hideGoogleVideosLinks(root = document) {
-  if (!isGoogleDomain()) {
-    return;
-  }
-
-  const links = root.querySelectorAll
-    ? root.querySelectorAll('a[jsname="pxBnId"].C6AK7c')
-    : [];
-
-  for (const link of links) {
-    if ((link.textContent || '').trim() === 'Videos') {
-      link.style.setProperty('display', 'none', 'important');
-    }
-  }
-}
-
-function ensureGoogleResultsObserver() {
-  if (!isGoogleDomain() || googleResultsObserver || !document.documentElement) {
-    return;
-  }
-
-  hideGoogleVideosLinks();
-
-  googleResultsObserver = new MutationObserver((mutations) => {
-    for (const mutation of mutations) {
-      for (const node of mutation.addedNodes) {
-        if (!(node instanceof Element)) {
-          continue;
-        }
-
-        if (node.matches('a[jsname="pxBnId"].C6AK7c')) {
-          hideGoogleVideosLinks(node.parentElement || document);
-          continue;
-        }
-
-        hideGoogleVideosLinks(node);
-      }
-    }
-  });
-
-  googleResultsObserver.observe(document.documentElement, {
-    childList: true,
-    subtree: true
-  });
 }
 
 function isYouTubeChannelPage() {
@@ -564,8 +493,6 @@ if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
     void (async () => {
       try {
-        ensureGoogleSearchBlockStyles();
-        ensureGoogleResultsObserver();
         await initYouTubeTracking();
         await censorPage();
       } catch (error) {
@@ -576,8 +503,6 @@ if (document.readyState === 'loading') {
 } else {
   void (async () => {
     try {
-      ensureGoogleSearchBlockStyles();
-      ensureGoogleResultsObserver();
       await initYouTubeTracking();
       await censorPage();
     } catch (error) {
