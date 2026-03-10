@@ -16,6 +16,7 @@ const KHAN_ACADEMY_FKEY = '1';
 const KHAN_ACADEMY_REQUEST_PARAM_RETRY_MS = 500;
 const KHAN_ACADEMY_REQUEST_PARAM_MAX_ATTEMPTS = 20;
 const KHAN_ACADEMY_ANSWER_KEYS = new Set(['a', 'b', 'c', 'd']);
+const KHAN_ACADEMY_HIDDEN_BANNER_TEXT = "We've updated our Terms of Service and Privacy Policy. Please review them now.";
 let youtubeTimer = null;
 let youtubeChannelBlockObserver = null;
 let youtubeChannelPageBlocked = false;
@@ -27,6 +28,7 @@ let khanAcademyLocationObserver = null;
 let khanAcademyObservedUrl = null;
 let khanAcademyNetworkTracingInstalled = false;
 let khanAcademyAnswerHotkeysInstalled = false;
+let khanAcademyBannerObserver = null;
 const KHAN_ACADEMY_PAGE_TRACE_BRIDGE_ID = 'ka-tracker-page-trace-bridge';
 let khanAcademySession = null;
 
@@ -343,6 +345,57 @@ function installKhanAcademyAnswerHotkeys() {
   }, true);
 
   logKhanAcademy('Installed answer hotkeys');
+}
+
+function hideKhanAcademyPolicyBanner() {
+  if (!isKhanAcademy()) {
+    return false;
+  }
+
+  const candidates = document.querySelectorAll('body *');
+  for (const element of candidates) {
+    if (!(element instanceof HTMLElement)) {
+      continue;
+    }
+
+    if (getNormalizedElementText(element) !== KHAN_ACADEMY_HIDDEN_BANNER_TEXT) {
+      continue;
+    }
+
+    const bannerElement = element.closest('[role="status"]') || element.parentElement;
+    if (!(bannerElement instanceof HTMLElement) || bannerElement.dataset.kaTrackerBannerHidden === 'true') {
+      return false;
+    }
+
+    bannerElement.dataset.kaTrackerBannerHidden = 'true';
+    bannerElement.style.display = 'none';
+    logKhanAcademy('Hid policy banner', {
+      text: KHAN_ACADEMY_HIDDEN_BANNER_TEXT
+    });
+    return true;
+  }
+
+  return false;
+}
+
+function installKhanAcademyBannerHider() {
+  if (!isKhanAcademy()) {
+    return;
+  }
+
+  hideKhanAcademyPolicyBanner();
+  if (khanAcademyBannerObserver) {
+    return;
+  }
+
+  khanAcademyBannerObserver = new MutationObserver(() => {
+    hideKhanAcademyPolicyBanner();
+  });
+  khanAcademyBannerObserver.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+  logKhanAcademy('Installed policy banner hider');
 }
 
 function isYouTubeChannelPage() {
@@ -1255,6 +1308,7 @@ async function initKhanAcademyTracking() {
 
   installKhanAcademyNetworkTracing();
   installKhanAcademyAnswerHotkeys();
+  installKhanAcademyBannerHider();
   logKhanAcademy('Initializing Khan Academy tracking', { url: window.location.href });
   ensureKhanAcademyLocationObserver();
   await scheduleKhanAcademyVideoLessonTimer();
