@@ -6,10 +6,191 @@ const OPENROUTER_MODEL = 'google/gemini-2.5-flash-lite';
 const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
 const YOUTUBE_TIME_LIMIT = 24 * 60 * 60 * 1000; // 2 hours in milliseconds
 const TIME_UPDATE_INTERVAL = 1000; // Update every second
+const KHAN_ACADEMY_VIDEO_DELAY = 5 * 1000;
+const KHAN_ACADEMY_PROGRESS_UPDATE_INTERVAL = 5 * 1000;
+const KHAN_ACADEMY_WATCH_SPEED_MULTIPLIER = 12;
+const KHAN_ACADEMY_APP = 'khanacademy';
+const KHAN_ACADEMY_LANG = 'en';
+const KHAN_ACADEMY_COUNTRY_CODE = 'CA';
+const KHAN_ACADEMY_FKEY = '1';
+const KHAN_ACADEMY_REQUEST_PARAM_RETRY_MS = 500;
+const KHAN_ACADEMY_REQUEST_PARAM_MAX_ATTEMPTS = 20;
 let youtubeTimer = null;
 let youtubeChannelBlockObserver = null;
 let youtubeChannelPageBlocked = false;
 const YOUTUBE_CHANNEL_BLOCK_STYLE_ID = 'youtube-channel-block-style';
+let khanAcademyTimer = null;
+let khanAcademyTimerUrl = null;
+let khanAcademyProgressInterval = null;
+let khanAcademyLocationObserver = null;
+let khanAcademyObservedUrl = null;
+let khanAcademyNetworkTracingInstalled = false;
+const KHAN_ACADEMY_PAGE_TRACE_BRIDGE_ID = 'ka-tracker-page-trace-bridge';
+let khanAcademySession = null;
+
+function logKhanAcademy(message, details) {
+  if (details === undefined) {
+    console.log(`[KA tracker] ${message}`);
+    return;
+  }
+
+  console.log(`[KA tracker] ${message}`, details);
+}
+
+function isKhanAcademyApiUrl(url) {
+  return typeof url === 'string'
+    && url.includes('khanacademy.org/api/');
+}
+
+function tryParseJson(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
+}
+
+function getKhanAcademyNetworkLogDetails(url, method, body) {
+  const details = { method, url };
+  const parsedBody = tryParseJson(body);
+
+  if (parsedBody?.operationName) {
+    details.operationName = parsedBody.operationName;
+  }
+
+  if (parsedBody?.variables) {
+    details.variables = parsedBody.variables;
+  }
+
+  if (typeof parsedBody?.query === 'string') {
+    details.queryPreview = parsedBody.query.slice(0, 160);
+  }
+
+  return details;
+}
+
+function installKhanAcademyPageContextNetworkTracing() {
+  if (!isKhanAcademy() || document.getElementById(KHAN_ACADEMY_PAGE_TRACE_BRIDGE_ID)) {
+    return;
+  }
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || event.data?.source !== KHAN_ACADEMY_PAGE_TRACE_BRIDGE_ID) {
+      return;
+    }
+
+    if (event.data.type === 'request') {
+      logKhanAcademy('page request', event.data.details);
+      return;
+    }
+
+    if (event.data.type === 'response') {
+      logKhanAcademy('page response', event.data.details);
+      return;
+    }
+
+    if (event.data.type === 'error') {
+      console.error('[KA tracker] page request failed', event.data.details);
+    }
+  });
+
+  const script = document.createElement('script');
+  script.id = KHAN_ACADEMY_PAGE_TRACE_BRIDGE_ID;
+  script.src = chrome.runtime.getURL('page-trace.js');
+
+  (document.documentElement || document.head || document.body).appendChild(script);
+  logKhanAcademy('Installed page-context network tracing bridge');
+}
+
+function installKhanAcademyNetworkTracing() {
+  if (!isKhanAcademy() || khanAcademyNetworkTracingInstalled) {
+    return;
+  }
+
+  khanAcademyNetworkTracingInstalled = true;
+  logKhanAcademy('Installing network tracing');
+  installKhanAcademyPageContextNetworkTracing();
+
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const [input, init] = args;
+    const url = typeof input === 'string' ? input : input?.url || '';
+    const method = init?.method || (typeof input !== 'string' ? input?.method : null) || 'GET';
+    const body = init?.body || (typeof input !== 'string' ? input?.body : null) || null;
+
+    if (isKhanAcademyApiUrl(url)) {
+      logKhanAcademy('fetch request', getKhanAcademyNetworkLogDetails(url, method, body));
+    }
+
+    try {
+      const response = await originalFetch(...args);
+
+      if (isKhanAcademyApiUrl(url)) {
+        logKhanAcademy('fetch response', {
+          method,
+          url,
+          status: response.status
+        });
+      }
+
+      return response;
+    } catch (error) {
+      if (isKhanAcademyApiUrl(url)) {
+        console.error('[KA tracker] fetch failed', {
+          method,
+          url,
+          error: String(error)
+        });
+      }
+      throw error;
+    }
+  };
+
+  const originalSendBeacon = navigator.sendBeacon?.bind(navigator);
+  if (originalSendBeacon) {
+    navigator.sendBeacon = (url, data) => {
+      if (isKhanAcademyApiUrl(url)) {
+        logKhanAcademy('sendBeacon request', {
+          url,
+          bodyPreview: typeof data === 'string' ? data.slice(0, 200) : String(data)
+        });
+      }
+
+      return originalSendBeacon(url, data);
+    };
+  }
+
+  const originalOpen = XMLHttpRequest.prototype.open;
+  const originalSend = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+    this.__kaTrackerMethod = method;
+    this.__kaTrackerUrl = url;
+    return originalOpen.call(this, method, url, ...rest);
+  };
+
+  XMLHttpRequest.prototype.send = function(body) {
+    const url = this.__kaTrackerUrl || '';
+    const method = this.__kaTrackerMethod || 'GET';
+
+    if (isKhanAcademyApiUrl(url)) {
+      logKhanAcademy('xhr request', getKhanAcademyNetworkLogDetails(url, method, body));
+      this.addEventListener('loadend', () => {
+        logKhanAcademy('xhr response', {
+          method,
+          url,
+          status: this.status
+        });
+      }, { once: true });
+    }
+
+    return originalSend.call(this, body);
+  };
+}
 
 function isExtensionContextValid() {
   try {
@@ -23,6 +204,11 @@ function isYouTube() {
   return window.location.hostname === 'www.youtube.com'
     || window.location.hostname === 'youtube.com'
     || window.location.hostname === 'm.youtube.com';
+}
+
+function isKhanAcademy() {
+  return window.location.hostname === 'www.khanacademy.org'
+    || window.location.hostname === 'khanacademy.org';
 }
 
 function isYouTubeChannelPage() {
@@ -240,6 +426,657 @@ function stopYouTubeTimer() {
   }
 }
 
+function stopKhanAcademyTimer() {
+  if (khanAcademyTimer) {
+    clearTimeout(khanAcademyTimer);
+    khanAcademyTimer = null;
+    logKhanAcademy('Cleared pending timer');
+  }
+  khanAcademyTimerUrl = null;
+}
+
+function stopKhanAcademyProgressInterval() {
+  if (khanAcademyProgressInterval) {
+    clearInterval(khanAcademyProgressInterval);
+    khanAcademyProgressInterval = null;
+    logKhanAcademy('Cleared progress interval');
+  }
+}
+
+function pauseKhanAcademySession() {
+  if (!khanAcademySession?.visibleSinceMs) {
+    return;
+  }
+
+  khanAcademySession.accumulatedVisibleMs += Date.now() - khanAcademySession.visibleSinceMs;
+  khanAcademySession.visibleSinceMs = null;
+  logKhanAcademy('Paused watch session', {
+    url: khanAcademySession.url,
+    accumulatedVisibleMs: khanAcademySession.accumulatedVisibleMs
+  });
+}
+
+function resumeKhanAcademySession() {
+  if (!khanAcademySession || khanAcademySession.completed || khanAcademySession.visibleSinceMs || document.visibilityState !== 'visible') {
+    return;
+  }
+
+  khanAcademySession.visibleSinceMs = Date.now();
+  logKhanAcademy('Resumed watch session', { url: khanAcademySession.url });
+}
+
+function resetKhanAcademySession() {
+  pauseKhanAcademySession();
+  stopKhanAcademyTimer();
+  stopKhanAcademyProgressInterval();
+  khanAcademySession = null;
+}
+
+function getKhanAcademyWatchedSeconds(session) {
+  if (!session) {
+    return 0;
+  }
+
+  const activeVisibleMs = session.visibleSinceMs ? Date.now() - session.visibleSinceMs : 0;
+  const totalVisibleMs = (session.accumulatedVisibleMs + activeVisibleMs) * KHAN_ACADEMY_WATCH_SPEED_MULTIPLIER;
+  return Math.min(
+    session.ids.durationSeconds,
+    Math.max(0, Math.floor(totalVisibleMs / 1000))
+  );
+}
+
+function getKhanAcademyPath() {
+  return window.location.pathname.replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function buildKhanAcademyHeaders(contentType = false) {
+  const headers = {
+    Accept: '*/*',
+    'X-KA-FKEY': KHAN_ACADEMY_FKEY
+  };
+
+  if (contentType) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  return headers;
+}
+
+function getKhanAcademyContentForPathRequestParams() {
+  const currentPath = getKhanAcademyPath();
+  const resourceEntries = performance.getEntriesByType('resource');
+
+  for (const entry of resourceEntries) {
+    if (!entry?.name?.includes('/api/internal/graphql/ContentForPath')) {
+      continue;
+    }
+
+    try {
+      const url = new URL(entry.name);
+      const variables = JSON.parse(url.searchParams.get('variables') || '{}');
+      if (variables.path !== currentPath) {
+        continue;
+      }
+
+      const hash = url.searchParams.get('hash');
+      if (!hash) {
+        continue;
+      }
+
+      return {
+        fastlyCacheable: url.searchParams.get('fastly_cacheable') || 'persist_until_publish',
+        hash,
+        pcv: url.searchParams.get('pcv')
+      };
+    } catch (error) {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+function waitForKhanAcademyContentForPathRequestParams() {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+
+    const tryResolve = () => {
+      const requestParams = getKhanAcademyContentForPathRequestParams();
+      if (requestParams?.hash) {
+        logKhanAcademy('Found ContentForPath request params', {
+          hash: requestParams.hash,
+          pcv: requestParams.pcv || null,
+          attempts: attempts + 1
+        });
+        resolve(requestParams);
+        return;
+      }
+
+      attempts += 1;
+      if (attempts >= KHAN_ACADEMY_REQUEST_PARAM_MAX_ATTEMPTS) {
+        reject(new Error('Unable to locate ContentForPath request parameters'));
+        return;
+      }
+
+      window.setTimeout(tryResolve, KHAN_ACADEMY_REQUEST_PARAM_RETRY_MS);
+    };
+
+    tryResolve();
+  });
+}
+
+async function fetchKhanAcademyContentForPath() {
+  const path = getKhanAcademyPath();
+  if (!path) {
+    logKhanAcademy('No path found for ContentForPath request');
+    return null;
+  }
+
+  logKhanAcademy('Waiting for ContentForPath request params');
+  const requestParams = await waitForKhanAcademyContentForPathRequestParams();
+
+  logKhanAcademy('Fetching ContentForPath metadata', {
+    path,
+    hash: requestParams.hash,
+    pcv: requestParams.pcv || null
+  });
+
+  const url = new URL('https://www.khanacademy.org/api/internal/graphql/ContentForPath');
+  url.searchParams.set('fastly_cacheable', requestParams.fastlyCacheable);
+  if (requestParams.pcv) {
+    url.searchParams.set('pcv', requestParams.pcv);
+  }
+  url.searchParams.set('hash', requestParams.hash);
+  url.searchParams.set('variables', JSON.stringify({
+    path,
+    countryCode: KHAN_ACADEMY_COUNTRY_CODE
+  }));
+  url.searchParams.set('lang', KHAN_ACADEMY_LANG);
+  url.searchParams.set('app', KHAN_ACADEMY_APP);
+
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    credentials: 'include',
+    headers: buildKhanAcademyHeaders()
+  });
+
+  if (!response.ok) {
+    throw new Error(`ContentForPath failed with status ${response.status}`);
+  }
+
+  return response.json();
+}
+
+function extractKhanAcademyIds(contentData) {
+  const listedPathData = contentData?.data?.contentRoute?.listedPathData;
+  const content = listedPathData?.content;
+  const lesson = listedPathData?.lesson;
+  const course = listedPathData?.course;
+
+  if (!content || !lesson || !course) {
+    logKhanAcademy('Missing content, lesson, or course data in ContentForPath response');
+    return null;
+  }
+
+  const contentKind = (content.contentKind || '').toLowerCase();
+  if (contentKind !== 'video') {
+    logKhanAcademy('Current Khan Academy page is not a video lesson', {
+      contentKind: content.contentKind || null
+    });
+    return null;
+  }
+
+  const lessonId = lesson.id;
+  if (!lessonId) {
+    return null;
+  }
+
+  const currentPath = window.location.pathname.replace(/\/+$/, '');
+  const unit = (course.unitChildren || []).find((unitChild) => {
+    const allChildren = unitChild?.allOrderedChildren || [];
+    return allChildren.some((child) => {
+      const childPath = child?.relativeUrl?.replace(/\/+$/, '');
+      const canonicalPath = child?.canonicalUrl?.replace(/\/+$/, '');
+      return child?.id === lessonId
+        || child?.slug === lesson.slug
+        || childPath === currentPath
+        || canonicalPath === currentPath;
+    });
+  });
+
+  const unitId = unit?.id;
+  if (!unitId) {
+    logKhanAcademy('Failed to resolve unitId for video lesson', {
+      lessonId,
+      lessonSlug: lesson.slug || null
+    });
+    return null;
+  }
+
+  logKhanAcademy('Resolved lesson and unit ids', {
+    lessonId,
+    unitId,
+    contentId: content.id,
+    durationSeconds: content.duration,
+    masteryEnabled: Boolean(course.masteryEnabled)
+  });
+
+  return {
+    lessonId,
+    unitId,
+    contentId: content.id,
+    durationSeconds: content.duration,
+    masteryEnabled: Boolean(course.masteryEnabled)
+  };
+}
+
+function interpretKhanAcademyUserProgressResponse(responseData, expectedContentId) {
+  const user = responseData?.data?.user;
+  const progresses = user?.contentItemProgresses || [];
+  const matchingProgress = progresses.find((item) => item?.content?.id === expectedContentId) || null;
+
+  if (!matchingProgress) {
+    return {
+      ok: false,
+      reason: 'missing-target-progress',
+      targetStatus: null,
+      targetContentId: expectedContentId,
+      progressSummary: progresses.map((item) => ({
+        id: item?.content?.id || null,
+        kind: item?.content?.contentKind || null,
+        status: item?.completionStatus || null
+      }))
+    };
+  }
+
+  return {
+    ok: matchingProgress.completionStatus === 'COMPLETE',
+    reason: matchingProgress.completionStatus === 'COMPLETE' ? 'complete' : 'not-complete',
+    targetStatus: matchingProgress.completionStatus || null,
+    targetContentId: expectedContentId,
+    progressSummary: progresses.map((item) => ({
+      id: item?.content?.id || null,
+      kind: item?.content?.contentKind || null,
+      status: item?.completionStatus || null
+    }))
+  };
+}
+
+async function fetchKhanAcademyUserProgress({ lessonId, unitId, contentId, masteryEnabled }) {
+  const url = new URL('https://www.khanacademy.org/api/internal/graphql/userProgressForLesson');
+  url.searchParams.set('lang', KHAN_ACADEMY_LANG);
+  url.searchParams.set('app', KHAN_ACADEMY_APP);
+
+  logKhanAcademy('Posting userProgressForLesson', {
+    lessonId,
+    unitId,
+    contentId,
+    masteryEnabled
+  });
+
+  const response = await fetch(url.toString(), {
+    method: 'POST',
+    credentials: 'include',
+    headers: buildKhanAcademyHeaders(true),
+    body: JSON.stringify({
+      operationName: 'userProgressForLesson',
+      query: `query userProgressForLesson($lessonId: String!, $unitId: String!, $masteryEnabled: Boolean!) {
+  user {
+    id
+    contentItemProgresses(queryBy: {parentTopicId: $lessonId}) {
+      ...BasicContentItemProgress
+      ... on ExerciseItemProgress @include(if: $masteryEnabled) {
+        lastCompletedAttempt {
+          id
+          lastAttemptDate
+          numCorrect
+          numAttempted
+          __typename
+        }
+        updatedMasteryLevel
+        __typename
+      }
+      __typename
+    }
+    latestQuizAttempts(topicId: $unitId) {
+      id
+      numCorrect
+      numAttempted
+      isCompleted
+      positionKey
+      __typename
+    }
+    latestUnitTestAttempts(unitId: $unitId) {
+      id
+      numCorrect
+      numAttempted
+      isCompleted
+      topicId
+      __typename
+    }
+    __typename
+  }
+}
+
+fragment BasicContentItemProgress on ContentItemProgress {
+  bestScore {
+    numAttempted
+    numCorrect
+    completedDate
+    __typename
+  }
+  completionStatus
+  content {
+    id
+    contentKind
+    contentDescriptor
+    progressKey
+    __typename
+  }
+  __typename
+}`,
+      variables: {
+        lessonId,
+        unitId,
+        masteryEnabled
+      }
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`userProgressForLesson failed with status ${response.status}`);
+  }
+
+  const responseData = await response.json();
+  const interpretation = interpretKhanAcademyUserProgressResponse(responseData, contentId);
+
+  logKhanAcademy('userProgressForLesson completed', {
+    status: response.status,
+    interpretation
+  });
+
+  if (!interpretation.ok) {
+    console.error('[KA tracker] userProgressForLesson did not mark the current video complete. Broken state detected.', interpretation);
+  }
+
+  return responseData;
+}
+
+async function updateKhanAcademyUserVideoProgress({ contentId, durationSeconds, secondsWatched, lastSecondWatched }) {
+  const url = new URL('https://www.khanacademy.org/api/internal/graphql/updateUserVideoProgress');
+  url.searchParams.set('lang', KHAN_ACADEMY_LANG);
+  url.searchParams.set('app', KHAN_ACADEMY_APP);
+
+  const normalizedDuration = Math.max(1, Math.ceil(Number(durationSeconds) || 0));
+  const normalizedSecondsWatched = Math.min(
+    normalizedDuration,
+    Math.max(0, Number(secondsWatched) || 0)
+  );
+  const normalizedLastSecondWatched = Math.min(
+    normalizedDuration,
+    Math.max(normalizedSecondsWatched, Number(lastSecondWatched) || 0)
+  );
+  const timezoneOffsetSeconds = -new Date().getTimezoneOffset() * 60;
+
+  const variables = {
+    input: {
+      contentId,
+      secondsWatched: normalizedSecondsWatched,
+      lastSecondWatched: normalizedLastSecondWatched,
+      durationSeconds: normalizedDuration,
+      captionsLocale: '',
+      fallbackPlayer: false,
+      localTimezoneOffsetSeconds: timezoneOffsetSeconds
+    }
+  };
+
+  logKhanAcademy('Posting updateUserVideoProgress', variables);
+
+  const response = await fetch(url.toString(), {
+    method: 'POST',
+    credentials: 'include',
+    headers: buildKhanAcademyHeaders(true),
+    body: JSON.stringify({
+      operationName: 'updateUserVideoProgress',
+      variables,
+      query: `mutation updateUserVideoProgress($input: UserVideoProgressInput!) {
+  updateUserVideoProgress(videoProgressUpdate: $input) {
+    videoItemProgress {
+      content {
+        id
+        progressKey
+        ... on Video {
+          downloadUrls
+          __typename
+        }
+        __typename
+      }
+      lastSecondWatched
+      secondsWatched
+      lastWatched
+      points
+      started
+      completed
+      __typename
+    }
+    actionResults {
+      pointsEarned {
+        points
+        __typename
+      }
+      tutorialNodeProgress {
+        contentId
+        progress
+        __typename
+      }
+      userProfile {
+        countVideosCompleted
+        points
+        countBrandNewNotifications
+        __typename
+      }
+      notificationsAdded {
+        badges
+        avatarParts
+        readable
+        urgent
+        toast
+        continueUrl
+        __typename
+      }
+      ... on VideoActionResults {
+        currentTask {
+          id
+          content {
+            id
+            __typename
+          }
+          pointBounty
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    error {
+      code
+      debugMessage
+      __typename
+    }
+    __typename
+  }
+}`
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`updateUserVideoProgress failed with status ${response.status}`);
+  }
+
+  const responseData = await response.json();
+  logKhanAcademy('updateUserVideoProgress completed', {
+    status: response.status,
+    result: responseData?.data?.updateUserVideoProgress || null
+  });
+
+  return responseData;
+}
+
+async function syncKhanAcademyWatchProgress(session) {
+  if (!session || session.inFlight || session.completed) {
+    return;
+  }
+
+  if (!isKhanAcademy() || window.location.href !== session.url) {
+    logKhanAcademy('Stopping watch sync because URL changed', {
+      expectedUrl: session.url,
+      currentUrl: window.location.href
+    });
+    resetKhanAcademySession();
+    return;
+  }
+
+  const watchedSeconds = getKhanAcademyWatchedSeconds(session);
+  if (watchedSeconds <= session.lastReportedSeconds) {
+    return;
+  }
+
+  try {
+    session.inFlight = true;
+    logKhanAcademy('Syncing watch progress', {
+      url: session.url,
+      watchedSeconds,
+      lastReportedSeconds: session.lastReportedSeconds,
+      durationSeconds: session.ids.durationSeconds
+    });
+
+    const updateResponse = await updateKhanAcademyUserVideoProgress({
+      ...session.ids,
+      secondsWatched: watchedSeconds,
+      lastSecondWatched: watchedSeconds
+    });
+
+    session.lastReportedSeconds = watchedSeconds;
+    const updateResult = updateResponse?.data?.updateUserVideoProgress;
+    if (updateResult?.error) {
+      console.error('[KA tracker] updateUserVideoProgress returned an error', updateResult.error);
+      return;
+    }
+
+    if (watchedSeconds >= session.ids.durationSeconds) {
+      await fetchKhanAcademyUserProgress(session.ids);
+      session.completed = true;
+      logKhanAcademy('Marked watch session complete', { url: session.url });
+      resetKhanAcademySession();
+    }
+  } catch (error) {
+    console.error('Khan Academy progress fetch failed:', error);
+  } finally {
+    if (session) {
+      session.inFlight = false;
+    }
+  }
+}
+
+function startKhanAcademyProgressInterval() {
+  stopKhanAcademyProgressInterval();
+  khanAcademyProgressInterval = window.setInterval(() => {
+    void syncKhanAcademyWatchProgress(khanAcademySession);
+  }, KHAN_ACADEMY_PROGRESS_UPDATE_INTERVAL);
+  logKhanAcademy('Started progress interval', {
+    intervalMs: KHAN_ACADEMY_PROGRESS_UPDATE_INTERVAL
+  });
+}
+
+async function startKhanAcademyWatchSession(expectedUrl) {
+  if (!isKhanAcademy() || window.location.href !== expectedUrl) {
+    logKhanAcademy('Skipping watch session start because URL changed', {
+      expectedUrl,
+      currentUrl: window.location.href
+    });
+    return;
+  }
+
+  logKhanAcademy('Timer fired for current video page', { url: expectedUrl });
+  const contentData = await fetchKhanAcademyContentForPath();
+  const ids = extractKhanAcademyIds(contentData);
+  if (!ids) {
+    logKhanAcademy('No lesson/unit ids available when timer fired');
+    return;
+  }
+
+  khanAcademySession = {
+    url: expectedUrl,
+    ids,
+    accumulatedVisibleMs: 0,
+    visibleSinceMs: document.visibilityState === 'visible' ? Date.now() : null,
+    lastReportedSeconds: 0,
+    inFlight: false,
+    completed: false
+  };
+
+  logKhanAcademy('Started watch session', {
+    url: expectedUrl,
+    durationSeconds: ids.durationSeconds,
+    speedMultiplier: KHAN_ACADEMY_WATCH_SPEED_MULTIPLIER
+  });
+
+  startKhanAcademyProgressInterval();
+  void syncKhanAcademyWatchProgress(khanAcademySession);
+}
+
+async function scheduleKhanAcademyVideoLessonTimer() {
+  resetKhanAcademySession();
+  if (!isKhanAcademy()) {
+    khanAcademyObservedUrl = null;
+    logKhanAcademy('Not on Khan Academy, skipping timer setup');
+    return;
+  }
+
+  const currentUrl = window.location.href;
+  if (khanAcademyObservedUrl === currentUrl) {
+    logKhanAcademy('URL already observed, not scheduling duplicate timer', { url: currentUrl });
+    return;
+  }
+
+  khanAcademyObservedUrl = currentUrl;
+  logKhanAcademy('Evaluating current Khan Academy route', { url: currentUrl });
+
+  try {
+    const contentData = await fetchKhanAcademyContentForPath();
+    const ids = extractKhanAcademyIds(contentData);
+    if (!ids) {
+      logKhanAcademy('Route does not need a timer');
+      return;
+    }
+
+    khanAcademyTimerUrl = currentUrl;
+    logKhanAcademy('Scheduling delayed progress fetch', {
+      url: currentUrl,
+      delayMs: KHAN_ACADEMY_VIDEO_DELAY
+    });
+    khanAcademyTimer = window.setTimeout(() => {
+      void startKhanAcademyWatchSession(currentUrl);
+    }, KHAN_ACADEMY_VIDEO_DELAY);
+  } catch (error) {
+    console.error('Khan Academy lesson metadata fetch failed:', error);
+  }
+}
+
+function ensureKhanAcademyLocationObserver() {
+  if (khanAcademyLocationObserver) {
+    return;
+  }
+
+  khanAcademyLocationObserver = window.setInterval(() => {
+    if (window.location.href === khanAcademyObservedUrl) {
+      return;
+    }
+
+    void scheduleKhanAcademyVideoLessonTimer();
+  }, 1000);
+}
+
 async function initYouTubeTracking() {
   if (!isExtensionContextValid()) {
     return;
@@ -265,6 +1102,19 @@ async function initYouTubeTracking() {
   }
 }
 
+async function initKhanAcademyTracking() {
+  if (!isKhanAcademy()) {
+    resetKhanAcademySession();
+    logKhanAcademy('Initialization skipped because current site is not Khan Academy');
+    return;
+  }
+
+  installKhanAcademyNetworkTracing();
+  logKhanAcademy('Initializing Khan Academy tracking', { url: window.location.href });
+  ensureKhanAcademyLocationObserver();
+  await scheduleKhanAcademyVideoLessonTimer();
+}
+
 document.addEventListener('visibilitychange', () => {
   void (async () => {
     try {
@@ -281,6 +1131,15 @@ document.addEventListener('visibilitychange', () => {
           stopYouTubeTimer();
         }
       }
+
+      if (isKhanAcademy()) {
+        if (document.visibilityState === 'visible') {
+          resumeKhanAcademySession();
+          void syncKhanAcademyWatchProgress(khanAcademySession);
+        } else {
+          pauseKhanAcademySession();
+        }
+      }
     } catch (error) {
       return;
     }
@@ -293,6 +1152,7 @@ window.addEventListener('beforeunload', () => {
   }
 
   stopYouTubeTimer();
+  resetKhanAcademySession();
 });
 
 document.addEventListener('yt-navigate-finish', () => {
@@ -494,6 +1354,7 @@ if (document.readyState === 'loading') {
     void (async () => {
       try {
         await initYouTubeTracking();
+        await initKhanAcademyTracking();
         await censorPage();
       } catch (error) {
         return;
@@ -504,6 +1365,7 @@ if (document.readyState === 'loading') {
   void (async () => {
     try {
       await initYouTubeTracking();
+      await initKhanAcademyTracking();
       await censorPage();
     } catch (error) {
       return;
