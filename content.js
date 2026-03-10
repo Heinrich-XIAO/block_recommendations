@@ -15,6 +15,7 @@ const KHAN_ACADEMY_COUNTRY_CODE = 'CA';
 const KHAN_ACADEMY_FKEY = '1';
 const KHAN_ACADEMY_REQUEST_PARAM_RETRY_MS = 500;
 const KHAN_ACADEMY_REQUEST_PARAM_MAX_ATTEMPTS = 20;
+const KHAN_ACADEMY_ANSWER_KEYS = new Set(['a', 'b', 'c', 'd']);
 let youtubeTimer = null;
 let youtubeChannelBlockObserver = null;
 let youtubeChannelPageBlocked = false;
@@ -25,6 +26,7 @@ let khanAcademyProgressInterval = null;
 let khanAcademyLocationObserver = null;
 let khanAcademyObservedUrl = null;
 let khanAcademyNetworkTracingInstalled = false;
+let khanAcademyAnswerHotkeysInstalled = false;
 const KHAN_ACADEMY_PAGE_TRACE_BRIDGE_ID = 'ka-tracker-page-trace-bridge';
 let khanAcademySession = null;
 
@@ -209,6 +211,138 @@ function isYouTube() {
 function isKhanAcademy() {
   return window.location.hostname === 'www.khanacademy.org'
     || window.location.hostname === 'khanacademy.org';
+}
+
+function isEditableElement(element) {
+  if (!(element instanceof HTMLElement)) {
+    return false;
+  }
+
+  return element.isContentEditable
+    || element.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]') !== null;
+}
+
+function getNormalizedElementText(element) {
+  if (!(element instanceof HTMLElement)) {
+    return '';
+  }
+
+  return (element.innerText || element.textContent || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getKhanAcademyAnswerKeyForElement(element) {
+  const text = getNormalizedElementText(element);
+  if (text) {
+    const leadingLetterMatch = text.match(/^([A-D])(?:\b|\s)/i);
+    if (leadingLetterMatch) {
+      return leadingLetterMatch[1].toLowerCase();
+    }
+  }
+
+  const ariaLabel = element.getAttribute('aria-label')?.trim() || '';
+  const ariaMatch = ariaLabel.match(/\b(?:choice|option)\s*([A-D])\b/i);
+  if (ariaMatch) {
+    return ariaMatch[1].toLowerCase();
+  }
+
+  return null;
+}
+
+function isVisibleKhanAcademyAnswerElement(element) {
+  if (!(element instanceof HTMLElement) || !element.isConnected) {
+    return false;
+  }
+
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  return rect.width > 0
+    && rect.height > 0
+    && style.visibility !== 'hidden'
+    && style.display !== 'none';
+}
+
+function getKhanAcademyAnswerChoiceMap() {
+  const choiceMap = new Map();
+  const candidateSelector = [
+    '[role="radio"]',
+    'button',
+    '[role="button"]',
+    'label'
+  ].join(', ');
+
+  for (const element of document.querySelectorAll(candidateSelector)) {
+    if (!isVisibleKhanAcademyAnswerElement(element)) {
+      continue;
+    }
+
+    const answerKey = getKhanAcademyAnswerKeyForElement(element);
+    if (!answerKey || choiceMap.has(answerKey)) {
+      continue;
+    }
+
+    choiceMap.set(answerKey, element);
+  }
+
+  return choiceMap;
+}
+
+function installKhanAcademyAnswerHotkeys() {
+  if (!isKhanAcademy() || khanAcademyAnswerHotkeysInstalled) {
+    return;
+  }
+
+  khanAcademyAnswerHotkeysInstalled = true;
+  document.addEventListener('keydown', (event) => {
+    if (!isKhanAcademy()) {
+      return;
+    }
+
+    const pressedKey = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+    if (!KHAN_ACADEMY_ANSWER_KEYS.has(pressedKey)) {
+      return;
+    }
+
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+      logKhanAcademy('Ignoring answer hotkey with modifier', {
+        key: pressedKey,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey
+      });
+      return;
+    }
+
+    if (isEditableElement(event.target)) {
+      logKhanAcademy('Ignoring answer hotkey from editable target', {
+        key: pressedKey,
+        targetTagName: event.target instanceof HTMLElement ? event.target.tagName : null
+      });
+      return;
+    }
+
+    const choiceMap = getKhanAcademyAnswerChoiceMap();
+    const targetElement = choiceMap.get(pressedKey);
+    if (!targetElement) {
+      logKhanAcademy('No answer option found for hotkey', {
+        key: pressedKey,
+        availableKeys: Array.from(choiceMap.keys())
+      });
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    logKhanAcademy('Clicking answer option from hotkey', {
+      key: pressedKey,
+      optionText: getNormalizedElementText(targetElement)
+    });
+    targetElement.click();
+  }, true);
+
+  logKhanAcademy('Installed answer hotkeys');
 }
 
 function isYouTubeChannelPage() {
@@ -1120,6 +1254,7 @@ async function initKhanAcademyTracking() {
   }
 
   installKhanAcademyNetworkTracing();
+  installKhanAcademyAnswerHotkeys();
   logKhanAcademy('Initializing Khan Academy tracking', { url: window.location.href });
   ensureKhanAcademyLocationObserver();
   await scheduleKhanAcademyVideoLessonTimer();
