@@ -290,6 +290,48 @@ function getKhanAcademyAnswerChoiceMap() {
   return choiceMap;
 }
 
+function getKhanAcademyPrimaryActionButton() {
+  const candidates = [];
+  const candidateSelector = [
+    'button',
+    '[role="button"]',
+    'a[role="button"]'
+  ].join(', ');
+
+  for (const element of document.querySelectorAll(candidateSelector)) {
+    if (!(element instanceof HTMLElement) || !isVisibleKhanAcademyAnswerElement(element)) {
+      continue;
+    }
+
+    if (element instanceof HTMLButtonElement && element.disabled) {
+      continue;
+    }
+
+    if (element.getAttribute('aria-disabled') === 'true') {
+      continue;
+    }
+
+    const text = getNormalizedElementText(element);
+    if (!text) {
+      continue;
+    }
+
+    const rect = element.getBoundingClientRect();
+    if (rect.bottom < window.innerHeight * 0.6 || rect.right < window.innerWidth * 0.5) {
+      continue;
+    }
+
+    candidates.push({
+      element,
+      text,
+      score: (rect.bottom * window.innerWidth) + rect.right
+    });
+  }
+
+  candidates.sort((left, right) => right.score - left.score);
+  return candidates[0]?.element || null;
+}
+
 function installKhanAcademyAnswerHotkeys() {
   if (!isKhanAcademy() || khanAcademyAnswerHotkeysInstalled) {
     return;
@@ -302,11 +344,13 @@ function installKhanAcademyAnswerHotkeys() {
     }
 
     const pressedKey = typeof event.key === 'string' ? event.key.toLowerCase() : '';
-    if (!KHAN_ACADEMY_ANSWER_KEYS.has(pressedKey)) {
+    const isAnswerHotkey = KHAN_ACADEMY_ANSWER_KEYS.has(pressedKey);
+    const isPrimaryActionHotkey = pressedKey === 'enter' && (event.ctrlKey || event.metaKey);
+    if (!isAnswerHotkey && !isPrimaryActionHotkey) {
       return;
     }
 
-    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+    if (event.altKey || event.shiftKey || (isAnswerHotkey && (event.ctrlKey || event.metaKey))) {
       logKhanAcademy('Ignoring answer hotkey with modifier', {
         key: pressedKey,
         altKey: event.altKey,
@@ -318,10 +362,33 @@ function installKhanAcademyAnswerHotkeys() {
     }
 
     if (isEditableElement(event.target)) {
-      logKhanAcademy('Ignoring answer hotkey from editable target', {
+      logKhanAcademy(`Ignoring ${isPrimaryActionHotkey ? 'primary action' : 'answer'} hotkey from editable target`, {
         key: pressedKey,
         targetTagName: event.target instanceof HTMLElement ? event.target.tagName : null
       });
+      return;
+    }
+
+    if (isPrimaryActionHotkey) {
+      const targetElement = getKhanAcademyPrimaryActionButton();
+      if (!targetElement) {
+        logKhanAcademy('No primary action button found for hotkey', {
+          key: pressedKey,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey
+        });
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      logKhanAcademy('Clicking primary action from hotkey', {
+        key: pressedKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        buttonText: getNormalizedElementText(targetElement)
+      });
+      targetElement.click();
       return;
     }
 
