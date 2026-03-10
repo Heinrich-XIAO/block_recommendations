@@ -297,6 +297,7 @@ function getKhanAcademyPrimaryActionButton() {
     '[role="button"]',
     'a[role="button"]'
   ].join(', ');
+  const primaryActionPattern = /^(check|next question|up next|let'?s go|keep going|continue|start|submit|try again|show answer)\b/i;
 
   for (const element of document.querySelectorAll(candidateSelector)) {
     if (!(element instanceof HTMLElement) || !isVisibleKhanAcademyAnswerElement(element)) {
@@ -317,14 +318,35 @@ function getKhanAcademyPrimaryActionButton() {
     }
 
     const rect = element.getBoundingClientRect();
-    if (rect.bottom < window.innerHeight * 0.6 || rect.right < window.innerWidth * 0.5) {
-      continue;
+    const style = window.getComputedStyle(element);
+    const backgroundColor = style.backgroundColor || '';
+    const isFilledButton = backgroundColor !== 'rgba(0, 0, 0, 0)'
+      && backgroundColor !== 'transparent'
+      && !/^rgba?\(255,\s*255,\s*255(?:,\s*1)?\)$/.test(backgroundColor);
+    const isInDialog = element.closest('[role="dialog"], [aria-modal="true"]') !== null;
+    const isInLowerRight = rect.bottom >= window.innerHeight * 0.6 && rect.right >= window.innerWidth * 0.5;
+    let score = (rect.bottom * window.innerWidth) + rect.right;
+
+    if (primaryActionPattern.test(text)) {
+      score += 10_000_000;
+    }
+
+    if (isFilledButton) {
+      score += 5_000_000;
+    }
+
+    if (isInDialog) {
+      score += 2_500_000;
+    }
+
+    if (isInLowerRight) {
+      score += 1_000_000;
     }
 
     candidates.push({
       element,
       text,
-      score: (rect.bottom * window.innerWidth) + rect.right
+      score
     });
   }
 
@@ -382,7 +404,7 @@ function installKhanAcademyAnswerHotkeys() {
     const pressedKey = typeof event.key === 'string' ? event.key.toLowerCase() : '';
     const isAnswerHotkey = KHAN_ACADEMY_ANSWER_KEYS.has(pressedKey);
     const isPrimaryActionHotkey = pressedKey === 'enter' && (event.ctrlKey || event.metaKey);
-    const isMainInputHotkey = pressedKey === 'tab' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+    const isMainInputHotkey = pressedKey === 'i' && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey;
     if (!isAnswerHotkey && !isPrimaryActionHotkey && !isMainInputHotkey) {
       return;
     }
