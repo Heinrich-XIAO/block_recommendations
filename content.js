@@ -332,6 +332,42 @@ function getKhanAcademyPrimaryActionButton() {
   return candidates[0]?.element || null;
 }
 
+function getKhanAcademyMainAnswerInput() {
+  if (getKhanAcademyAnswerChoiceMap().size > 0) {
+    return null;
+  }
+
+  const candidates = [];
+  const candidateSelector = [
+    'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"])',
+    'textarea',
+    '[role="textbox"]',
+    '[contenteditable="true"]',
+    '[contenteditable=""]'
+  ].join(', ');
+
+  for (const element of document.querySelectorAll(candidateSelector)) {
+    if (!(element instanceof HTMLElement) || !isVisibleKhanAcademyAnswerElement(element)) {
+      continue;
+    }
+
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      if (element.disabled || element.readOnly) {
+        continue;
+      }
+    }
+
+    const rect = element.getBoundingClientRect();
+    candidates.push({
+      element,
+      score: rect.top * window.innerWidth + rect.left
+    });
+  }
+
+  candidates.sort((left, right) => left.score - right.score);
+  return candidates[0]?.element || null;
+}
+
 function installKhanAcademyAnswerHotkeys() {
   if (!isKhanAcademy() || khanAcademyAnswerHotkeysInstalled) {
     return;
@@ -346,7 +382,8 @@ function installKhanAcademyAnswerHotkeys() {
     const pressedKey = typeof event.key === 'string' ? event.key.toLowerCase() : '';
     const isAnswerHotkey = KHAN_ACADEMY_ANSWER_KEYS.has(pressedKey);
     const isPrimaryActionHotkey = pressedKey === 'enter' && (event.ctrlKey || event.metaKey);
-    if (!isAnswerHotkey && !isPrimaryActionHotkey) {
+    const isMainInputHotkey = pressedKey === 'tab' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+    if (!isAnswerHotkey && !isPrimaryActionHotkey && !isMainInputHotkey) {
       return;
     }
 
@@ -362,10 +399,33 @@ function installKhanAcademyAnswerHotkeys() {
     }
 
     if (isEditableElement(event.target)) {
-      logKhanAcademy(`Ignoring ${isPrimaryActionHotkey ? 'primary action' : 'answer'} hotkey from editable target`, {
+      logKhanAcademy(`Ignoring ${isMainInputHotkey ? 'main input' : isPrimaryActionHotkey ? 'primary action' : 'answer'} hotkey from editable target`, {
         key: pressedKey,
         targetTagName: event.target instanceof HTMLElement ? event.target.tagName : null
       });
+      return;
+    }
+
+    if (isMainInputHotkey) {
+      const targetElement = getKhanAcademyMainAnswerInput();
+      if (!targetElement) {
+        logKhanAcademy('No main answer input found for hotkey', {
+          key: pressedKey,
+          multipleChoice: getKhanAcademyAnswerChoiceMap().size > 0
+        });
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      logKhanAcademy('Focusing main answer input from hotkey', {
+        key: pressedKey,
+        targetTagName: targetElement.tagName
+      });
+      targetElement.focus();
+      if (targetElement instanceof HTMLInputElement || targetElement instanceof HTMLTextAreaElement) {
+        targetElement.select();
+      }
       return;
     }
 
