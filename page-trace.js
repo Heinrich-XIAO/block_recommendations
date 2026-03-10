@@ -4,6 +4,13 @@
   const isApiUrl = (url) =>
     typeof url === 'string' && url.includes('khanacademy.org/api/');
 
+  const isIgnorableApiFailure = (url) =>
+    typeof url === 'string' && (
+      url.includes('/api/internal/_analytics/') ||
+      url.includes('/api/internal/_bb/page_perf_log') ||
+      url.includes('/api/internal/_bb/bigbingo/')
+    );
+
   const parseBody = (body) => {
     if (typeof body !== 'string') {
       return null;
@@ -111,6 +118,10 @@
     } catch (error) {
       if (isApiUrl(url)) {
         post('error', { url, method, error: String(error) });
+      }
+      if (isIgnorableApiFailure(url)) {
+        post('response', { url, method, status: 'suppressed-fetch-error' });
+        return new Response('', { status: 204, statusText: 'No Content' });
       }
       throw error;
     }

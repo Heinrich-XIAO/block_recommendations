@@ -94,7 +94,7 @@ function installKhanAcademyPageContextNetworkTracing() {
     }
 
     if (event.data.type === 'error') {
-      console.error('[KA tracker] page request failed', event.data.details);
+      logKhanAcademy('page request failed', event.data.details);
     }
   });
 
@@ -140,7 +140,7 @@ function installKhanAcademyNetworkTracing() {
       return response;
     } catch (error) {
       if (isKhanAcademyApiUrl(url)) {
-        console.error('[KA tracker] fetch failed', {
+        logKhanAcademy('fetch failed', {
           method,
           url,
           error: String(error)
