@@ -501,19 +501,20 @@ function hideKhanAcademyPolicyBanner() {
     return false;
   }
 
-  const candidates = document.querySelectorAll('body *');
-  for (const element of candidates) {
-    if (!(element instanceof HTMLElement)) {
-      continue;
-    }
-
-    if (getNormalizedElementText(element) !== KHAN_ACADEMY_HIDDEN_BANNER_TEXT) {
-      continue;
-    }
-
-    const bannerElement = element.closest('[role="status"]') || element.parentElement;
+  const statusBanners = document.querySelectorAll('[role="status"]');
+  for (const bannerElement of statusBanners) {
     if (!(bannerElement instanceof HTMLElement) || bannerElement.dataset.kaTrackerBannerHidden === 'true') {
-      return false;
+      continue;
+    }
+
+    const bannerText = getNormalizedElementText(bannerElement);
+    if (!bannerText.includes(KHAN_ACADEMY_HIDDEN_BANNER_TEXT)) {
+      continue;
+    }
+
+    const bannerRect = bannerElement.getBoundingClientRect();
+    if (bannerRect.top > 200) {
+      continue;
     }
 
     bannerElement.dataset.kaTrackerBannerHidden = 'true';
