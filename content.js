@@ -7,8 +7,8 @@ const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
 const YOUTUBE_TIME_LIMIT = 24 * 60 * 60 * 1000; // 2 hours in milliseconds
 const TIME_UPDATE_INTERVAL = 1000; // Update every second
 const KHAN_ACADEMY_VIDEO_DELAY = 5 * 1000;
-const KHAN_ACADEMY_PROGRESS_UPDATE_INTERVAL = 5 * 1000;
-const KHAN_ACADEMY_WATCH_SPEED_MULTIPLIER = 12;
+const KHAN_ACADEMY_PROGRESS_UPDATE_INTERVAL = 2500;
+const KHAN_ACADEMY_WATCH_SPEED_MULTIPLIER = 24;
 const KHAN_ACADEMY_APP = 'khanacademy';
 const KHAN_ACADEMY_LANG = 'en';
 const KHAN_ACADEMY_COUNTRY_CODE = 'CA';
@@ -466,6 +466,12 @@ function resumeKhanAcademySession() {
 }
 
 function resetKhanAcademySession() {
+  if (khanAcademySession) {
+    logKhanAcademy('Resetting watch session', {
+      previousUrl: khanAcademySession.url
+    });
+  }
+
   pauseKhanAcademySession();
   stopKhanAcademyTimer();
   stopKhanAcademyProgressInterval();
@@ -1073,6 +1079,10 @@ function ensureKhanAcademyLocationObserver() {
       return;
     }
 
+    logKhanAcademy('Detected Khan Academy SPA route change', {
+      previousUrl: khanAcademyObservedUrl,
+      nextUrl: window.location.href
+    });
     void scheduleKhanAcademyVideoLessonTimer();
   }, 1000);
 }
