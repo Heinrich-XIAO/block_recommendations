@@ -1171,18 +1171,26 @@ document.addEventListener('yt-navigate-finish', () => {
 });
 
 function countKeywords(text) {
-  const lowerText = text.toLowerCase();
-  let count = 0;
-  
+  return findBlockedKeywordMatches(text).length;
+}
+
+function findBlockedKeywordMatches(text) {
+  const matches = [];
+
   BLOCKED_KEYWORDS.forEach(keyword => {
-    const regex = new RegExp(`\\b${keyword}\\b`, 'gi');
-    const matches = lowerText.match(regex);
-    if (matches) {
-      count += matches.length;
+    const regex = new RegExp(`(?<=\\s)${keyword}(?=\\s)`, 'gi');
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+      matches.push({
+        keyword,
+        index: match.index,
+        end: match.index + keyword.length
+      });
     }
   });
-  
-  return count;
+
+  return matches.sort((a, b) => a.index - b.index);
 }
 
 function getMainContent() {
@@ -1235,7 +1243,13 @@ function getKeywordContext(text, windowSize = 10) {
     words.push({ word: match[0], index: match.index });
   }
 
-  const keywordIndex = words.findIndex(entry => BLOCKED_KEYWORD_SET.has(entry.word.toLowerCase()));
+  const keywordMatches = findBlockedKeywordMatches(text);
+  if (keywordMatches.length === 0) {
+    return '';
+  }
+
+  const firstMatch = keywordMatches[0];
+  const keywordIndex = words.findIndex(entry => entry.index === firstMatch.index);
 
   if (keywordIndex === -1) {
     return '';
