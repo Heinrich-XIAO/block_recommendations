@@ -15,6 +15,7 @@ const KHAN_ACADEMY_COUNTRY_CODE = 'CA';
 const KHAN_ACADEMY_FKEY = '1';
 const KHAN_ACADEMY_REQUEST_PARAM_RETRY_MS = 500;
 const KHAN_ACADEMY_REQUEST_PARAM_MAX_ATTEMPTS = 20;
+const KHAN_ACADEMY_INPUT_AUTOFOCUS_INTERVAL = 1000;
 const KHAN_ACADEMY_ANSWER_KEYS = new Set(['a', 'b', 'c', 'd']);
 const KHAN_ACADEMY_HIDDEN_BANNER_TEXT = "We've updated our Terms of Service and Privacy Policy. Please review them now.";
 let youtubeTimer = null;
@@ -24,6 +25,7 @@ const YOUTUBE_CHANNEL_BLOCK_STYLE_ID = 'youtube-channel-block-style';
 let khanAcademyTimer = null;
 let khanAcademyTimerUrl = null;
 let khanAcademyProgressInterval = null;
+let khanAcademyInputAutofocusInterval = null;
 let khanAcademyLocationObserver = null;
 let khanAcademyObservedUrl = null;
 let khanAcademyNetworkTracingInstalled = false;
@@ -780,6 +782,44 @@ function stopKhanAcademyProgressInterval() {
   }
 }
 
+function stopKhanAcademyInputAutofocusInterval() {
+  if (khanAcademyInputAutofocusInterval) {
+    clearInterval(khanAcademyInputAutofocusInterval);
+    khanAcademyInputAutofocusInterval = null;
+    logKhanAcademy('Cleared input autofocus interval');
+  }
+}
+
+function startKhanAcademyInputAutofocusInterval() {
+  if (khanAcademyInputAutofocusInterval || !isKhanAcademy()) {
+    return;
+  }
+
+  khanAcademyInputAutofocusInterval = window.setInterval(() => {
+    if (!isKhanAcademy() || document.visibilityState !== 'visible') {
+      return;
+    }
+
+    const targetElement = getKhanAcademyMainAnswerInput();
+    if (!targetElement || document.activeElement === targetElement) {
+      return;
+    }
+
+    if (isEditableElement(document.activeElement)) {
+      return;
+    }
+
+    targetElement.focus();
+    logKhanAcademy('Auto-focused main answer input', {
+      targetTagName: targetElement.tagName
+    });
+  }, KHAN_ACADEMY_INPUT_AUTOFOCUS_INTERVAL);
+
+  logKhanAcademy('Started input autofocus interval', {
+    intervalMs: KHAN_ACADEMY_INPUT_AUTOFOCUS_INTERVAL
+  });
+}
+
 function pauseKhanAcademySession() {
   if (!khanAcademySession?.visibleSinceMs) {
     return;
@@ -1451,6 +1491,7 @@ async function initYouTubeTracking() {
 
 async function initKhanAcademyTracking() {
   if (!isKhanAcademy()) {
+    stopKhanAcademyInputAutofocusInterval();
     resetKhanAcademySession();
     logKhanAcademy('Initialization skipped because current site is not Khan Academy');
     return;
@@ -1459,6 +1500,7 @@ async function initKhanAcademyTracking() {
   installKhanAcademyNetworkTracing();
   installKhanAcademyAnswerHotkeys();
   installKhanAcademyBannerHider();
+  startKhanAcademyInputAutofocusInterval();
   logKhanAcademy('Initializing Khan Academy tracking', { url: window.location.href });
   ensureKhanAcademyLocationObserver();
   await scheduleKhanAcademyVideoLessonTimer();
@@ -1501,6 +1543,7 @@ window.addEventListener('beforeunload', () => {
   }
 
   stopYouTubeTimer();
+  stopKhanAcademyInputAutofocusInterval();
   resetKhanAcademySession();
 });
 
