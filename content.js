@@ -221,6 +221,10 @@ function isKhanAcademyExercisePage() {
   return isKhanAcademy() && /\/e\//.test(window.location.pathname);
 }
 
+function isKhanAcademyVideoPage() {
+  return isKhanAcademy() && /\/v\//.test(window.location.pathname);
+}
+
 function isEditableElement(element) {
   if (!(element instanceof HTMLElement)) {
     return false;
@@ -301,9 +305,12 @@ function getKhanAcademyPrimaryActionButton() {
   const candidateSelector = [
     'button',
     '[role="button"]',
-    'a[role="button"]'
+    'a[role="button"]',
+    'a[href]'
   ].join(', ');
-  const primaryActionPattern = /^(check|next question|up next|let'?s go|keep going|continue|start|submit|try again|show answer)\b/i;
+  const primaryActionPattern = /^(check|next question|up next|up next:|let'?s go|keep going|continue|submit|show answer)\b/i;
+  const preferredPrimaryActionPattern = /^(up next|up next:|let'?s go|next question|check|continue|keep going|show answer|submit)\b/i;
+  const fallbackPrimaryActionPattern = /^(start over|start|try again)\b/i;
 
   for (const element of document.querySelectorAll(candidateSelector)) {
     if (!(element instanceof HTMLElement) || !isVisibleKhanAcademyAnswerElement(element)) {
@@ -315,6 +322,10 @@ function getKhanAcademyPrimaryActionButton() {
     }
 
     if (element.getAttribute('aria-disabled') === 'true') {
+      continue;
+    }
+
+    if (element instanceof HTMLAnchorElement && !element.href) {
       continue;
     }
 
@@ -331,10 +342,23 @@ function getKhanAcademyPrimaryActionButton() {
       && !/^rgba?\(255,\s*255,\s*255(?:,\s*1)?\)$/.test(backgroundColor);
     const isInDialog = element.closest('[role="dialog"], [aria-modal="true"]') !== null;
     const isInLowerRight = rect.bottom >= window.innerHeight * 0.6 && rect.right >= window.innerWidth * 0.5;
+    const isVideoPrimaryAction = isKhanAcademyVideoPage() && /^(up next:|let'?s go)\b/i.test(text);
     let score = (rect.bottom * window.innerWidth) + rect.right;
 
     if (primaryActionPattern.test(text)) {
       score += 10_000_000;
+    }
+
+    if (preferredPrimaryActionPattern.test(text)) {
+      score += 12_000_000;
+    }
+
+    if (fallbackPrimaryActionPattern.test(text)) {
+      score -= 20_000_000;
+    }
+
+    if (isVideoPrimaryAction) {
+      score += 15_000_000;
     }
 
     if (isFilledButton) {
@@ -430,15 +454,18 @@ function installKhanAcademyAnswerHotkeys() {
       return;
     }
 
-    if (isEditableElement(event.target)) {
-      logKhanAcademy(`Ignoring ${isMainInputHotkey ? 'main input' : isPrimaryActionHotkey ? 'primary action' : 'answer'} hotkey from editable target`, {
-        key: pressedKey,
-        targetTagName: event.target instanceof HTMLElement ? event.target.tagName : null
-      });
-      return;
-    }
-
     if (isMainInputHotkey) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (isEditableElement(event.target)) {
+        logKhanAcademy('Ignoring main input hotkey from editable target', {
+          key: pressedKey,
+          targetTagName: event.target instanceof HTMLElement ? event.target.tagName : null
+        });
+        return;
+      }
+
       const targetElement = getKhanAcademyMainAnswerInput();
       if (!targetElement) {
         logKhanAcademy('No main answer input found for hotkey', {
@@ -447,9 +474,6 @@ function installKhanAcademyAnswerHotkeys() {
         });
         return;
       }
-
-      event.preventDefault();
-      event.stopPropagation();
       logKhanAcademy('Focusing main answer input from hotkey', {
         key: pressedKey,
         targetTagName: targetElement.tagName
@@ -462,6 +486,9 @@ function installKhanAcademyAnswerHotkeys() {
     }
 
     if (isPrimaryActionHotkey) {
+      event.preventDefault();
+      event.stopPropagation();
+
       const targetElement = getKhanAcademyPrimaryActionButton();
       if (!targetElement) {
         logKhanAcademy('No primary action button found for hotkey', {
@@ -471,9 +498,6 @@ function installKhanAcademyAnswerHotkeys() {
         });
         return;
       }
-
-      event.preventDefault();
-      event.stopPropagation();
       logKhanAcademy('Clicking primary action from hotkey', {
         key: pressedKey,
         ctrlKey: event.ctrlKey,
@@ -481,6 +505,14 @@ function installKhanAcademyAnswerHotkeys() {
         buttonText: getNormalizedElementText(targetElement)
       });
       targetElement.click();
+      return;
+    }
+
+    if (isEditableElement(event.target)) {
+      logKhanAcademy('Ignoring answer hotkey from editable target', {
+        key: pressedKey,
+        targetTagName: event.target instanceof HTMLElement ? event.target.tagName : null
+      });
       return;
     }
 
