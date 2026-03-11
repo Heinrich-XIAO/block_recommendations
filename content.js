@@ -18,6 +18,7 @@ const KHAN_ACADEMY_REQUEST_PARAM_MAX_ATTEMPTS = 20;
 const KHAN_ACADEMY_INPUT_AUTOFOCUS_INTERVAL = 1000;
 const KHAN_ACADEMY_ANSWER_KEYS = new Set(['a', 'b', 'c', 'd']);
 const KHAN_ACADEMY_HIDDEN_BANNER_TEXT = "We've updated our Terms of Service and Privacy Policy. Please review them now.";
+const KHAN_ACADEMY_VIDEO_HOTKEY_BRIDGE_TYPE = 'ka-tracker-primary-action-request';
 let youtubeTimer = null;
 let youtubeChannelBlockObserver = null;
 let youtubeChannelPageBlocked = false;
@@ -31,8 +32,10 @@ let khanAcademyObservedUrl = null;
 let khanAcademyNetworkTracingInstalled = false;
 let khanAcademyAnswerHotkeysInstalled = false;
 let khanAcademyBannerObserver = null;
+let khanAcademyVideoHotkeyBridgeInstalled = false;
 const KHAN_ACADEMY_PAGE_TRACE_BRIDGE_ID = 'ka-tracker-page-trace-bridge';
 let khanAcademySession = null;
+const khanAcademyContentForPathRequestParamsByPath = new Map();
 
 function logKhanAcademy(message, details) {
   if (details === undefined) {
@@ -58,6 +61,60 @@ function tryParseJson(value) {
   } catch (error) {
     return null;
   }
+}
+
+function normalizeKhanAcademyPath(path) {
+  if (typeof path !== 'string') {
+    return '';
+  }
+
+  return path.replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function getKhanAcademyContentForPathCacheKey(path) {
+  return normalizeKhanAcademyPath(path);
+}
+
+function getKhanAcademyContentForPathRequestParamsFromUrl(urlValue) {
+  if (typeof urlValue !== 'string' || !urlValue.includes('/api/internal/graphql/ContentForPath')) {
+    return null;
+  }
+
+  try {
+    const url = new URL(urlValue, window.location.origin);
+    const variables = JSON.parse(url.searchParams.get('variables') || '{}');
+    const normalizedPath = getKhanAcademyContentForPathCacheKey(variables.path);
+    const hash = url.searchParams.get('hash');
+    if (!normalizedPath || !hash) {
+      return null;
+    }
+
+    return {
+      path: normalizedPath,
+      requestParams: {
+        fastlyCacheable: url.searchParams.get('fastly_cacheable') || 'persist_until_publish',
+        hash,
+        pcv: url.searchParams.get('pcv')
+      }
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+function rememberKhanAcademyContentForPathRequestParams(urlValue, source) {
+  const parsed = getKhanAcademyContentForPathRequestParamsFromUrl(urlValue);
+  if (!parsed) {
+    return;
+  }
+
+  khanAcademyContentForPathRequestParamsByPath.set(parsed.path, parsed.requestParams);
+  logKhanAcademy('Cached ContentForPath request params', {
+    path: parsed.path,
+    hash: parsed.requestParams.hash,
+    pcv: parsed.requestParams.pcv || null,
+    source
+  });
 }
 
 function getKhanAcademyNetworkLogDetails(url, method, body) {
@@ -90,6 +147,7 @@ function installKhanAcademyPageContextNetworkTracing() {
     }
 
     if (event.data.type === 'request') {
+      rememberKhanAcademyContentForPathRequestParams(event.data.details?.url, 'page-request');
       logKhanAcademy('page request', event.data.details);
       return;
     }
@@ -384,6 +442,72 @@ function getKhanAcademyPrimaryActionButton() {
   return candidates[0]?.element || null;
 }
 
+function triggerKhanAcademyPrimaryAction(triggerDetails = {}) {
+  if (!isKhanAcademy()) {
+    return false;
+  }
+
+  const targetElement = getKhanAcademyPrimaryActionButton();
+  if (!targetElement) {
+    logKhanAcademy('No primary action button found for hotkey', triggerDetails);
+    return false;
+  }
+
+  logKhanAcademy('Clicking primary action from hotkey', {
+    ...triggerDetails,
+    buttonText: getNormalizedElementText(targetElement)
+  });
+  targetElement.click();
+  return true;
+}
+
+function installKhanAcademyVideoHotkeyBridge() {
+  if (!isKhanAcademy() || khanAcademyVideoHotkeyBridgeInstalled || window.top !== window) {
+    return;
+  }
+
+  khanAcademyVideoHotkeyBridgeInstalled = true;
+  window.addEventListener('message', (event) => {
+    if (event.data?.type !== KHAN_ACADEMY_VIDEO_HOTKEY_BRIDGE_TYPE) {
+      return;
+    }
+
+    let hostname = '';
+    try {
+      hostname = new URL(event.origin).hostname;
+    } catch (error) {
+      return;
+    }
+
+    if (!/youtube(?:-nocookie)?\.com$/.test(hostname)) {
+      return;
+    }
+
+    triggerKhanAcademyPrimaryAction({
+      source: 'youtube-iframe'
+    });
+  });
+}
+
+function installEmbeddedYouTubePrimaryActionHotkeyBridge() {
+  if (!isYouTube() || window.top === window || window.parent === window) {
+    return;
+  }
+
+  document.addEventListener('keydown', (event) => {
+    const pressedKey = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+    if (pressedKey !== 'enter' || (!event.ctrlKey && !event.metaKey) || event.altKey || event.shiftKey) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    window.parent.postMessage({
+      type: KHAN_ACADEMY_VIDEO_HOTKEY_BRIDGE_TYPE
+    }, '*');
+  }, true);
+}
+
 function getKhanAcademyMainAnswerInput() {
   if (!isKhanAcademyExercisePage()) {
     return null;
@@ -489,22 +613,11 @@ function installKhanAcademyAnswerHotkeys() {
       event.preventDefault();
       event.stopPropagation();
 
-      const targetElement = getKhanAcademyPrimaryActionButton();
-      if (!targetElement) {
-        logKhanAcademy('No primary action button found for hotkey', {
-          key: pressedKey,
-          ctrlKey: event.ctrlKey,
-          metaKey: event.metaKey
-        });
-        return;
-      }
-      logKhanAcademy('Clicking primary action from hotkey', {
+      triggerKhanAcademyPrimaryAction({
         key: pressedKey,
         ctrlKey: event.ctrlKey,
-        metaKey: event.metaKey,
-        buttonText: getNormalizedElementText(targetElement)
+        metaKey: event.metaKey
       });
-      targetElement.click();
       return;
     }
 
@@ -536,6 +649,24 @@ function installKhanAcademyAnswerHotkeys() {
   }, true);
 
   logKhanAcademy('Installed answer hotkeys');
+}
+
+function installKhanAcademyCommandBridge() {
+  if (!isExtensionContextValid()) {
+    return;
+  }
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== 'khan-primary-action') {
+      return false;
+    }
+
+    const clicked = triggerKhanAcademyPrimaryAction({
+      source: 'command'
+    });
+    sendResponse({ clicked });
+    return true;
+  });
 }
 
 function hideKhanAcademyPolicyBanner() {
@@ -909,7 +1040,7 @@ function getKhanAcademyWatchedSeconds(session) {
 }
 
 function getKhanAcademyPath() {
-  return window.location.pathname.replace(/^\/+/, '').replace(/\/+$/, '');
+  return normalizeKhanAcademyPath(window.location.pathname);
 }
 
 function buildKhanAcademyHeaders(contentType = false) {
@@ -926,34 +1057,22 @@ function buildKhanAcademyHeaders(contentType = false) {
 }
 
 function getKhanAcademyContentForPathRequestParams() {
-  const currentPath = getKhanAcademyPath();
+  const currentPath = getKhanAcademyContentForPathCacheKey(getKhanAcademyPath());
+  const cachedRequestParams = khanAcademyContentForPathRequestParamsByPath.get(currentPath);
+  if (cachedRequestParams?.hash) {
+    return cachedRequestParams;
+  }
+
   const resourceEntries = performance.getEntriesByType('resource');
 
   for (const entry of resourceEntries) {
-    if (!entry?.name?.includes('/api/internal/graphql/ContentForPath')) {
+    const parsed = getKhanAcademyContentForPathRequestParamsFromUrl(entry?.name);
+    if (!parsed || parsed.path !== currentPath) {
       continue;
     }
 
-    try {
-      const url = new URL(entry.name);
-      const variables = JSON.parse(url.searchParams.get('variables') || '{}');
-      if (variables.path !== currentPath) {
-        continue;
-      }
-
-      const hash = url.searchParams.get('hash');
-      if (!hash) {
-        continue;
-      }
-
-      return {
-        fastlyCacheable: url.searchParams.get('fastly_cacheable') || 'persist_until_publish',
-        hash,
-        pcv: url.searchParams.get('pcv')
-      };
-    } catch (error) {
-      continue;
-    }
+    khanAcademyContentForPathRequestParamsByPath.set(parsed.path, parsed.requestParams);
+    return parsed.requestParams;
   }
 
   return null;
@@ -1540,6 +1659,7 @@ async function initKhanAcademyTracking() {
   installKhanAcademyNetworkTracing();
   installKhanAcademyAnswerHotkeys();
   installKhanAcademyBannerHider();
+  installKhanAcademyVideoHotkeyBridge();
   startKhanAcademyInputAutofocusInterval();
   logKhanAcademy('Initializing Khan Academy tracking', { url: window.location.href });
   ensureKhanAcademyLocationObserver();
@@ -1799,6 +1919,8 @@ if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
     void (async () => {
       try {
+        installEmbeddedYouTubePrimaryActionHotkeyBridge();
+        installKhanAcademyCommandBridge();
         await initYouTubeTracking();
         await initKhanAcademyTracking();
         await censorPage();
@@ -1810,6 +1932,8 @@ if (document.readyState === 'loading') {
 } else {
   void (async () => {
     try {
+      installEmbeddedYouTubePrimaryActionHotkeyBridge();
+      installKhanAcademyCommandBridge();
       await initYouTubeTracking();
       await initKhanAcademyTracking();
       await censorPage();

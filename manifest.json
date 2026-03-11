@@ -3,7 +3,15 @@
   "name": "Content Censor & YouTube Hider",
   "version": "1.0",
   "description": "Censors adult content and hides YouTube recommendations",
-  "permissions": ["activeTab", "storage"],
+  "permissions": ["activeTab", "storage", "tabs"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "trigger-khan-primary-action": {
+      "description": "Trigger the Khan Academy primary action"
+    }
+  },
   "host_permissions": [
     "https://openrouter.ai/*",
     "https://www.khanacademy.org/*",
@@ -13,6 +21,7 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
+      "all_frames": true,
       "run_at": "document_start"
     },
     {
