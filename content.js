@@ -217,6 +217,10 @@ function isKhanAcademy() {
     || window.location.hostname === 'khanacademy.org';
 }
 
+function isKhanAcademyExercisePage() {
+  return isKhanAcademy() && /\/e\//.test(window.location.pathname);
+}
+
 function isEditableElement(element) {
   if (!(element instanceof HTMLElement)) {
     return false;
@@ -357,6 +361,10 @@ function getKhanAcademyPrimaryActionButton() {
 }
 
 function getKhanAcademyMainAnswerInput() {
+  if (!isKhanAcademyExercisePage()) {
+    return null;
+  }
+
   if (getKhanAcademyAnswerChoiceMap().size > 0) {
     return null;
   }
@@ -796,7 +804,7 @@ function startKhanAcademyInputAutofocusInterval() {
   }
 
   khanAcademyInputAutofocusInterval = window.setInterval(() => {
-    if (!isKhanAcademy() || document.visibilityState !== 'visible') {
+    if (!isKhanAcademyExercisePage() || document.visibilityState !== 'visible') {
       return;
     }
 
